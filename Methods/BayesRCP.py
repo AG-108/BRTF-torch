@@ -14,8 +14,9 @@ def ten2mat(tensor, mode):
     )
 
 def safelog(x):
-    x = max(x,1e-200)
-    x = min(x,1e300)
+    if not isinstance(x,torch.Tensor):
+        x = torch.tensor(x)
+    x = torch.clamp(x,1e-31,1e31)
     return torch.log(x)
 
 def BayesRCP(Y, init = INIT_ML, maxRank = None, dimRed = 1, initVar = 1, updateHyper = UPDATEHYPER_ON, maxIters = 100, tol = 1e-5, predVar = PREDVAR_DOES_NOT_COMPUTE, verbose = VERBOSE_TEXT):
@@ -47,13 +48,13 @@ def BayesRCP(Y, init = INIT_ML, maxRank = None, dimRed = 1, initVar = 1, updateH
     nObs = dimY.prod()
     LB = []
 
-    a_gamma0 = 1e-6
-    b_gamma0 = 1e-6
-    a_beta0 = 1e-6
-    b_beta0 = 1e-6
-    a_alpha0 = 1e-6
-    b_alpha0 = 1e-6
-    eps = 1e-15
+    a_gamma0 = torch.tensor(1e-6)
+    b_gamma0 = torch.tensor(1e-6)
+    a_beta0 = torch.tensor(1e-6)
+    b_beta0 = torch.tensor(1e-6)
+    a_alpha0 = torch.tensor(1e-6)
+    b_alpha0 = torch.tensor(1e-6)
+    eps = torch.tensor(1e-15)
 
     gammas = (a_gamma0+eps)/(b_gamma0+eps)*torch.ones(maxRank,1);
     beta = (a_beta0+eps)/(b_beta0+eps);
@@ -121,14 +122,17 @@ def BayesRCP(Y, init = INIT_ML, maxRank = None, dimRed = 1, initVar = 1, updateH
         for n in range(N):
             b_gammaN = b_gammaN + (Z[n].mH.matmul(Z[n])).diag() + dimY[n] * ZSigma[n].diag()
         b_gammaN = b_gamma0 + 0.5 * b_gammaN
-        gammas = a_gammaN/b_gammaN
+        gammas = a_gammaN.squeeze()/b_gammaN
 
         EX2 = torch.ones(maxRank,maxRank)
         for n in range(N):
             EX2 = EX2 * EZZT[n]
-        EX2 = EX2.sum(dim=0)
+        EX2 = EX2.sum()
         EE2 = (E.square() + Sigma_E).sum()
-        Err = Y.mH.matmul(Y) - Y.mH.matmul(E) + 2 * X.mH.matmul(E) + EX2 + EE2
+        Err = Y.square().sum() \
+              - 2*(Y.view(-1)*X.view(-1)).sum() \
+              - 2*(Y.view(-1)*E.view(-1)).sum() \
+              + 2*(E.view(-1)*X.view(-1)).sum() + EX2 + EE2
         a_betaN = a_beta0 + 0.5*nObs
         b_betaN = b_beta0 + 0.5*Err
         beta = a_betaN/b_betaN
@@ -148,46 +152,50 @@ def BayesRCP(Y, init = INIT_ML, maxRank = None, dimRed = 1, initVar = 1, updateH
 
         items = torch.zeros(11)
 
-        items[1] = -0.5 * nObs * safelog(2 * torch.pi) \
-                + 0.5 * nObs * (psi(a_betaN) - safelog(b_betaN)) \
-                - 0.5 * (a_betaN / b_betaN) * err;
+        items[0] = -0.5 * nObs * safelog(torch.tensor(2 * torch.pi)) \
+                + 0.5 * nObs * (torch.special.psi(a_betaN) - safelog(b_betaN)) \
+                - 0.5 * (a_betaN / b_betaN) * Err
 
-        items[2] = 0
+        items[1] = 0
 
         for n in range(N):
-            items[2] = items[2] + -0.5 * maxRank * dimY[n] * safelog(2*pi) \
+            items[1] = items[1] + -0.5 * maxRank * dimY[n] * safelog(torch.tensor(2*torch.pi)) \
                     + 0.5 * dimY[n] * (torch.special.psi(a_gammaN)- safelog(b_gammaN)).sum() \
-                    - 0.5 * (gammas.diag() * (ZSigma[n].sum(dim=2))).trace() \
+                    - 0.5 * (gammas.diag() * (ZSigma[n])).trace() \
                     - 0.5 * (gammas.diag() * Z[n].mH.matmul(Z[n])).trace()
+            # 这里有一个求和：为什么？
 
-        items[3] = (-safelog(torch.lgamma(a_gamma0)).sum() + a_gamma0 * safelog(b_gamma0) \
-                - b_gamma0 * (a_gammaN / b_gammaN) \
-                + (a_gamma0 - 1) * (torch.special.psi(a_gammaN) - safelog(b_gammaN)))
+        items[2] = (-torch.lgamma(a_gamma0)
+                    + a_gamma0 * safelog(b_gamma0) \
+                    - b_gamma0 * (a_gammaN / b_gammaN) \
+                    + (a_gamma0 - 1) * (torch.special.psi(a_gammaN) - safelog(b_gammaN))).sum()
 
-        items[4] = -safelog(torch.lgamma(a_beta0)) + a_beta0 * safelog(b_beta0) \
+        items[3] = -torch.lgamma(a_beta0) + a_beta0 * safelog(b_beta0) \
                 + (a_beta0 - 1) * (torch.special.psi(a_betaN) - safelog(b_betaN)) \
                 - b_beta0 * (a_betaN / b_betaN);
 
-        items[5] = 0.5 * maxRank * dimY.sum() * (1 + safelog(2*pi));
+        items[4] = 0.5 * maxRank * dimY.sum() * (1 + safelog(2*torch.pi));
 
         for n in range(N):
-            items[5] = items[5] + dimY[n] * 0.5 * safelog((ZSigma[n]).det())
+            items[4] = items[5] + dimY[n] * 0.5 * safelog((ZSigma[n]).det())
 
-        items[6] = sum(safelog(gamma(a_gammaN)) - (a_gammaN - 1) * psi(a_gammaN) - safelog(b_gammaN) + a_gammaN);
+        items[5] = (torch.lgamma(a_gammaN) \
+                    - (a_gammaN - 1) * torch.special.psi(a_gammaN) - safelog(b_gammaN) + a_gammaN).sum();
 
-        items[7] = safelog(gamma(a_betaN)) - (a_betaN - 1) * psi(a_betaN) - safelog(b_betaN) + a_betaN;
+        items[6] = torch.lgamma(a_betaN) - (a_betaN - 1) * torch.special.psi(a_betaN) \
+                   - safelog(b_betaN) + a_betaN;
 
         temp = torch.special.psi(a_alphaN) - safelog(b_alphaN);
 
-        items[8] = -0.5 * nObs * safelog(2*pi) + 0.5 * temp.sum() \
-                - 0.5 * (E.square() + Sigma_E).mH.matmul(alphas)
+        items[7] = - 0.5 * nObs * safelog(2*torch.pi) + 0.5 * temp.sum() \
+                - 0.5 * ((E.square() + Sigma_E)*alphas).sum()
 
-        items[9] = -nObs * safelog(gamma(a_alpha0)) + nObs * a_alpha0 * safelog(b_alpha0) \
+        items[8] = -nObs * torch.lgamma(a_alpha0) + nObs * a_alpha0 * safelog(b_alpha0) \
                 + ((a_alpha0-1) * temp - b_alpha0 * alphas).sum()
 
-        items[10] = 0.5 * (safelog(Sigma_E)),sum() + 0.5 * nObs * (1 + safelog(2 * pi))
+        items[9] = 0.5 * (safelog(Sigma_E)).sum() + 0.5 * nObs * (1 + safelog(2 * torch.pi))
 
-        items[11] = (safelog(torch.lgamma(a_alphaN)) \
+        items[10] = (torch.lgamma(a_alphaN) \
                  - (a_alphaN - 1) * torch.special.psi(a_alphaN) \
                  - safelog(b_alphaN) + a_alphaN).sum()
 
@@ -195,12 +203,66 @@ def BayesRCP(Y, init = INIT_ML, maxRank = None, dimRed = 1, initVar = 1, updateH
 
         if updateHyper == UPDATEHYPER_ON:
             if it > 5:
-                aMean = alpha.mean()
+                aMean = alphas.mean()
                 bMean = (torch.special.psi(a_alphaN) - safelog(b_alphaN)).mean()
-                ngLB = lambda x : x.lgamma().log() - x * (x/aMean).log() - (x-1)*bMean + x
-                a_alpha0 = scipy.optimize.minimize(ngLB,a_alpha0)
+                ngLB = lambda x : np.math.lgamma(x) - x * np.log(x/aMean.numpy()) - (x-1)*(bMean.numpy()) + x
+                a_alpha0 = scipy.optimize.minimize(ngLB,a_alpha0.numpy()).x
+                a_alpha0 = torch.tensor(a_alpha0,dtype=torch.float32)
                 b_alpha0 = a_alpha0/aMean
 
-    
-    return None
+        Zall = torch.concat(Z,dim=0)
+        comPower = (Zall.mH.matmul(Zall)).diag()
+        comTol = dimY.sum() * np.finfo(float(Zall.norm())).eps
+        rankest = (comPower > comTol).sum()
+
+        if rankest.max() == 0:
+            raise ValueError("Rank becomes 0!")
+
+        if dimRed == 1 and it >= 1:
+            if maxRank != rankest.max():
+                indices = comPower > comTol
+                gammas = gammas[indices]
+                for i in range(N):
+                    Z[n] = Z[n][:,indices]
+                    ZSigma[n] = ZSigma[n][indices,indices]
+                    EZZT[n] = EZZT[n][indices,indices]
+
+                maxRank = rankest
+
+        # visualize online results
+
+        # Display progress
+
+        # Convergence check
+
+    # Predictive distribution
+    if predVar == PREDVAR_COMPUTE_AND_OUTPUT:
+        XVar = torch.zeros(Y.size())
+        for i in range(N):
+            XVar = ten2mat(XVar,dim=n)
+            Fslash = tl.tenalg.khatri_rao(Z[0:n]+Z[n+1:N], reverse=True)
+            XVar = XVar + (Fslash.matmul(ZSigma[n]).matmul(Fslash.mH)).mH.repeat(dimY[n],1)
+        XVar = XVar + 1/beta
+        XVar = XVar*(2*a_betaN)/(2*a_betaN-2)
+    elif predVar == PREDVAR_FAST_COMPUTATION:
+        temp = []
+        for i in range(N):
+            temp.append((ZSigma[n].repeat(1,dimY[n]) + tl.tenalg.khatri_rao(Z[n].mH,Z[n].mH)).mH)
+        XVar = tltorch.CPTensor(torch.ones(n),temp).to_tensor() - X.square()
+        XVar = XVar + 1/beta
+    else:
+        XVar = torch.tensor([])
+
+    # output
+    model.Z = Z
+    model.ZSigma = ZSigma
+    model.gammas = gammas
+    model.E = E
+    model.Sigma_E = Sigma_E
+    model.beta = beta
+    model.Xvar = Xvar
+    model.TrueRank = rankest
+    model.LowBound = LB.max()
+
+    return model
 
