@@ -30,13 +30,13 @@ def safelog(x):
 def BayesRCP(Y, init = INIT_ML, maxRank = None, dimRed = 1, initVar = 1, updateHyper = UPDATEHYPER_ON, maxIters = 100, tol = 1e-5, predVar = PREDVAR_DOES_NOT_COMPUTE, verbose = VERBOSE_TEXT):
     '''
     :param Y:               - input tensor
-    :param init:            - Initialization mathod
+    :param init:            - Initialization method
                                 - 'ml'  : Apply SVD to Y and initialize factor matrices (default)
                                 - 'rand': initialize factor matrices with random matrices
     :param maxRank:         - The initial CP rank
                             - max(size(Y)) (default)
     :param dimRed:          - 0: Keep number of components as the initialized value
-                            - 1: Remove zero components automaticly (default)
+                            - 1: Remove zero components automatically (default)
     :param initVar:         - Initialization of variance of outliers (default: 1)
     :param updateHyper:     - Optimization of top level parameter (default: on)
     :param maxIters:        - maximum number of iterations (default: 100)
