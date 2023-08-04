@@ -5,6 +5,7 @@ import torch
 import numpy as np
 import tensorly as tl
 import random
+import math
 
 def setup_seed(seed):
     torch.manual_seed(seed)
@@ -13,19 +14,30 @@ def setup_seed(seed):
     random.seed(seed)
     torch.backends.cudnn.deterministic = True
 
-def ten2mat(tensor, mode):
-    return torch.tensor(
-        np.reshape(
-            np.moveaxis(tensor.numpy(), mode, 0),
-            (tensor.shape[mode], -1),
-            order='F')
-    )
+# def ten2mat(tensor, mode):
+#     return torch.tensor(
+#         np.reshape(
+#             np.moveaxis(tensor.numpy(), mode, 0),
+#             (tensor.shape[mode], -1),
+#             order='F')
+#     )
+
+def tenmat_permute_idx(n, N):
+    permute_arrange = list(range(N - 1, -1, -1))
+    permute_arrange.remove(n)
+    return [n] + permute_arrange
+
+def ten2mat(X, n, N):
+    idx = tenmat_permute_idx(n, N)
+    return X.permute(idx).flatten(1, -1)
 
 def safelog(x):
-    if not isinstance(x,torch.Tensor):
-        x = torch.tensor(x)
-    x = torch.clamp(x,1e-38,1e38)
-    return torch.log(x)
+    return math.log(min(max(x, 1e-300), 1e300)) if isinstance(x, (float, int)) \
+        else torch.log(torch.clamp(x, min=1e-45, max=1e38))
+    # if not isinstance(x,torch.Tensor):
+    #     x = torch.tensor(x)
+    # x = torch.clamp(x,1e-38,1e38)
+    # return torch.log(x)
 
 def BayesRCP(Y, init = INIT_ML, maxRank = None, dimRed = 1, initVar = 1, updateHyper = UPDATEHYPER_ON, maxIters = 100, tol = 1e-5, predVar = PREDVAR_DOES_NOT_COMPUTE, verbose = VERBOSE_TEXT):
     '''
@@ -62,48 +74,61 @@ def BayesRCP(Y, init = INIT_ML, maxRank = None, dimRed = 1, initVar = 1, updateH
     b_beta0 = torch.tensor(1e-6)
     a_alpha0 = torch.tensor(1e-6)
     b_alpha0 = torch.tensor(1e-6)
-    eps = torch.tensor(1e-10)
+    eps = 2.2204e-16
+    # eps = torch.tensor(1e-10)
 
-    gammas = (a_gamma0+eps)/(b_gamma0+eps)*torch.ones(maxRank,1);
+    gammas = (a_gamma0+eps)/(b_gamma0+eps)*torch.ones(maxRank)#,1);
     beta = (a_beta0+eps)/(b_beta0+eps);
     alphas = 1/initVar*torch.ones(tuple(dimY))*((a_alpha0+eps)/(b_alpha0+eps));
 
-    E = 1/(alphas.sqrt())*torch.randn(tuple(dimY));
-    Sigma_E = 1/alphas*torch.ones(tuple(dimY));
+    # E = 1/(alphas.sqrt())*torch.randn(tuple(dimY));
+    # Sigma_E = 1/alphas*torch.ones(tuple(dimY));
+    E = torch.pow(alphas, -0.5) * torch.randn_like(Y)
+    Sigma_E = torch.pow(alphas, -1) * torch.ones_like(Y)
 
-    if not isinstance(init,int):
-        pass
-        # Z = init;
-        # if numel(Z) ~= N
-        #     error('OPTS.init does not have %d cells',N);
-        # end
-        # for n = 1:N;
-        #     if ~isequal(size(Z{n}),[size(Y,n) maxRank])
-        #         error('OPTS.init{%d} is the wrong size',n);
-        #     end
-        # end
-    else:
-        if init == INIT_ML:
-            Z = []
-            ZSigma = []
-            for n in range(N):
-                ZSigma.append((1/gammas).diag())
-                [U, S, Vh] = torch.linalg.svd(ten2mat(Y, n))
-                S = S.diag()
-                V = Vh.mH
-                dvar = (Y.square().sum()/nObs).sqrt()
-                if maxRank <= U.size(dim=1):
-                    Z.append(U[:,0:maxRank].matmul(S[0:maxRank,0:maxRank].sqrt()))
-                else:
-                    Z.append(torch.cat(U.matmul(S.sqrt()), torch.randn(dimY[n], maxRank-U.size(dim=1))*dvar))
-        elif init == INIT_RAND:
-            Z = []
-            ZSigma = []
-            for n in range(n):
-                ZSigma.append((1/gammas).diag())
-                dvar = (Y.square().sum() / nObs).sqrt()
-                Z.append(torch.randn(dimY[n], maxRank) * dvar)
-
+    # if not isinstance(init,int):
+    #     pass
+    #     # Z = init;
+    #     # if numel(Z) ~= N
+    #     #     error('OPTS.init does not have %d cells',N);
+    #     # end
+    #     # for n = 1:N;
+    #     #     if ~isequal(size(Z{n}),[size(Y,n) maxRank])
+    #     #         error('OPTS.init{%d} is the wrong size',n);
+    #     #     end
+    #     # end
+    # else:
+    #     dvar = (Y.square().sum() / nObs).sqrt()
+    #     if init == INIT_ML:
+    #         Z = []
+    #         ZSigma = []
+    #         for n in range(N):
+    #             ZSigma.append((1/gammas).diag())
+    #             [U, S, Vh] = torch.linalg.svd(ten2mat(Y, n, N), full_matrices=False)
+    #             S = S.diag()
+    #             V = Vh.mH
+    #             if maxRank <= U.size(dim=1):
+    #                 Z.append(U[:,0:maxRank].matmul(S[0:maxRank,0:maxRank].sqrt()))
+    #             else:
+    #                 Z.append(torch.cat(U.matmul(S.sqrt()), torch.randn(dimY[n], maxRank-U.size(dim=1))*dvar))
+    #     elif init == INIT_RAND:
+    #         Z = []
+    #         ZSigma = []
+    #         for n in range(N):
+    #             ZSigma.append((1/gammas).diag())
+    #             Z.append(torch.randn(dimY[n], maxRank) * dvar)
+    Z, ZSigma = [], []
+    dvar = torch.sqrt(torch.sum(torch.square(Y)) / nObs)
+    for n in range(N):
+        ZSigma.append(torch.diag(torch.pow(gammas, -1)))
+        U, S, V = torch.linalg.svd(ten2mat(Y, n, N).flatten(1, -1), full_matrices=False)
+        S = torch.diag(S)
+        if maxRank <= U.size(1):
+            Z.append(U[:, :maxRank] @ torch.pow(S[:maxRank, :maxRank], 0.5))
+        else:
+            Z.append(
+                torch.concat([U @ torch.pow(S, 0.5), torch.randn((dimY[n], maxRank - U.size(1))).to(Y.device) * dvar],
+                                 dim=1))
     # create figure -- remain to be solved
 
     # model learning
@@ -118,19 +143,19 @@ def BayesRCP(Y, init = INIT_ML, maxRank = None, dimRed = 1, initVar = 1, updateH
             for m in range(N):
                 if m != n:
                     ENZZT = ENZZT * EZZT[m]
-            FslashY = tl.tenalg.khatri_rao(Z[0:n]+Z[n+1:N], reverse=True).mH.matmul(ten2mat(Y-E,n).mH)
+            FslashY = tl.tenalg.khatri_rao(Z[0:n]+Z[n+1:N], reverse=True).mH.matmul(ten2mat(Y-E,n, N).mH)
             ZSigma[n] = torch.inverse(beta * ENZZT + Aw)
             Z[n] = (beta * ZSigma[n]).matmul(FslashY).mH
             EZZT[n] = Z[n].mH.matmul(Z[n]) + dimY[n] * ZSigma[n]
 
         X = tltorch.CPTensor(torch.ones(Z[0].size(dim=1)),Z).to_tensor()
 
-        a_gammaN = (0.5*dimY.sum() + a_gamma0) * torch.ones(maxRank,1)
+        a_gammaN = (0.5*dimY.sum() + a_gamma0) * torch.ones(maxRank)#,1)
         b_gammaN = 0
         for n in range(N):
             b_gammaN = b_gammaN + (Z[n].mH.matmul(Z[n])).diag() + dimY[n] * ZSigma[n].diag()
         b_gammaN = b_gamma0 + 0.5 * b_gammaN
-        gammas = a_gammaN.squeeze()/b_gammaN
+        gammas = a_gammaN/b_gammaN
 
         EX2 = torch.ones(maxRank,maxRank)
         for n in range(N):
@@ -157,7 +182,8 @@ def BayesRCP(Y, init = INIT_ML, maxRank = None, dimRed = 1, initVar = 1, updateH
             a_alphaN = a_alpha0 + 1 - alphas * Sigma_E
             b_alphaN = b_alpha0 + E.square() + eps
             alphas = a_alphaN / b_alphaN
-
+        a_alphaN = torch.tensor(a_alphaN)
+        a_alpha0 = torch.tensor(a_alpha0)
         items = torch.zeros(11)
 
         items[0] = -0.5 * nObs * safelog(torch.tensor(2 * torch.pi)) \
@@ -165,7 +191,7 @@ def BayesRCP(Y, init = INIT_ML, maxRank = None, dimRed = 1, initVar = 1, updateH
                 - 0.5 * (a_betaN / b_betaN) * Err
 
         items[1] = 0
-
+        #
         for n in range(N):
             items[1] = items[1] + -0.5 * maxRank * dimY[n] * safelog(torch.tensor(2*torch.pi)) \
                     + 0.5 * dimY[n] * (torch.special.psi(a_gammaN)- safelog(b_gammaN)).sum() \
@@ -211,11 +237,15 @@ def BayesRCP(Y, init = INIT_ML, maxRank = None, dimRed = 1, initVar = 1, updateH
 
         if updateHyper == UPDATEHYPER_ON:
             if it > 5:
-                aMean = alphas.mean()
-                bMean = (torch.special.psi(a_alphaN) - safelog(b_alphaN)).mean()
-                ngLB = lambda x : np.math.lgamma(x) - x * np.log(x/aMean.numpy()) - (x-1)*(bMean.numpy()) + x
-                a_alpha0 = scipy.optimize.minimize(ngLB,a_alpha0.numpy()).x
-                a_alpha0 = torch.tensor(a_alpha0,dtype=torch.float32)
+                aMean = alphas.mean().item()
+                bMean = (torch.digamma(torch.tensor(a_alphaN)) - safelog(b_alphaN.flatten())).mean().item()
+                ngLB = lambda x: math.lgamma(x) - x * math.log(x / aMean) - (x - 1) * bMean + x
+                a_alpha0 = scipy.optimize.fmin(ngLB, a_alpha0, disp=False)[0]
+                # aMean = alphas.mean()
+                # bMean = (torch.special.psi(a_alphaN) - safelog(b_alphaN)).mean()
+                # ngLB = lambda x : np.math.lgamma(x) - x * np.log(x/aMean.numpy()) - (x-1)*(bMean.numpy()) + x
+                # a_alpha0 = scipy.optimize.minimize(ngLB,a_alpha0.numpy()).x
+                # a_alpha0 = torch.tensor(a_alpha0,dtype=torch.float32)
                 b_alpha0 = a_alpha0/aMean
 
         Zall = torch.concat(Z,dim=0)
@@ -226,14 +256,16 @@ def BayesRCP(Y, init = INIT_ML, maxRank = None, dimRed = 1, initVar = 1, updateH
         if rankest.max() == 0:
             raise ValueError("Rank becomes 0!")
 
-        if dimRed == 1 and it >= 1:
+        if dimRed == 1 and it >= 2:#1:
             if maxRank != rankest.max():
                 indices = comPower > comTol
                 gammas = gammas[indices]
                 for n in range(N):
                     Z[n] = Z[n][:,indices]
-                    ZSigma[n] = ZSigma[n][indices,indices]
-                    EZZT[n] = EZZT[n][indices,indices]
+                    # ZSigma[n] = ZSigma[n][indices,indices]
+                    # EZZT[n] = EZZT[n][indices,indices]
+                    ZSigma[n] = ZSigma[n][indices, :][:, indices]
+                    EZZT[n] = EZZT[n][indices, :][:, indices]
 
                 maxRank = rankest
 
